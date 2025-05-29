@@ -1,16 +1,14 @@
 from flask import Flask, request, jsonify
 from sentence_transformers import SentenceTransformer, util
-import numpy as np
 import os
 
-# Create Flask app
 app = Flask(__name__)
 
 # Disable Hugging Face symlink warnings
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "true"
 
-# Use a smaller model (512MB RAM or less)
-MODEL_NAME = "sentence-transformers/paraphrase-MiniLM-L3-v2"
+# Use a smaller model (~300MB RAM)
+MODEL_NAME = "sentence-transformers/paraphrase-albert-small-v2"
 model = SentenceTransformer(MODEL_NAME)
 
 def normalize(skill):
@@ -37,14 +35,19 @@ def match_employees():
         emp["skills"] = [normalize(s) for s in emp.get("skills", [])]
         emp["skills_text"] = ", ".join(emp["skills"])
 
-    # Create embeddings
+    # Create embeddings (convert to numpy directly to reduce RAM)
     employee_texts = [emp["skills_text"] for emp in employees]
-    employee_embeddings = model.encode(employee_texts, convert_to_tensor=True)
+    employee_embeddings = model.encode(employee_texts, convert_to_numpy=True)
     query_text = ", ".join(query_skills)
-    query_embedding = model.encode(query_text, convert_to_tensor=True)
+    query_embedding = model.encode(query_text, convert_to_numpy=True)
 
-    # Compute cosine similarities
-    cos_sim = util.cos_sim(query_embedding, employee_embeddings)[0].cpu().numpy()
+    # Compute cosine similarities manually
+    cos_similarities = []
+    for emb in employee_embeddings:
+        cos_sim = (query_embedding @ emb) / (
+            (query_embedding @ query_embedding) ** 0.5 * (emb @ emb) ** 0.5
+        )
+        cos_similarities.append(float(cos_sim))
 
     # Weights
     WEIGHT_EMBEDDING = 0.7
@@ -54,7 +57,7 @@ def match_employees():
     combined_scores = []
     for i, emp in enumerate(employees):
         partial_score = partial_match_percentage(query_skills, emp["skills"])
-        embedding_score = float(cos_sim[i])
+        embedding_score = cos_similarities[i]
         combined_score = WEIGHT_EMBEDDING * embedding_score + WEIGHT_PARTIAL * partial_score
         combined_scores.append({
             "id": emp["id"],
@@ -68,4 +71,6 @@ def match_employees():
     return jsonify(combined_scores)
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    # Use gunicorn to run in production on Render
+    from waitress import serve
+    serve(app, host="0.0.0.0", port=5000)
