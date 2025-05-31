@@ -1,18 +1,24 @@
 from flask import Flask, request, jsonify
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
+import os
 
 app = Flask(__name__)
+
+# Health check endpoint
+@app.route("/", methods=["GET"])
+def home():
+    return "Service is live!", 200
 
 # Normalize skill (lowercase, trim)
 def normalize(skill):
     return skill.lower().strip()
 
-# Partial match percentage
-def partial_match_percentage(query_skills, emp_skills):
+# Partial match percentage + matched skills
+def partial_match(query_skills, emp_skills):
     matched_skills = [q for q in query_skills if any(q in e for e in emp_skills)]
-    return len(matched_skills) / len(query_skills) if query_skills else 0
+    percentage = len(matched_skills) / len(query_skills) if query_skills else 0
+    return percentage, matched_skills
 
 @app.route("/match", methods=["POST"])
 def match_employees():
@@ -35,23 +41,29 @@ def match_employees():
     employee_vectors = tfidf_matrix[1:]
     cos_similarities = cosine_similarity(query_vector, employee_vectors)[0]
 
-    # Weights
-    WEIGHT_EMBEDDING = 0.7
-    WEIGHT_PARTIAL = 0.3
+    # Weights: 80% partial match, 20% embedding similarity
+    WEIGHT_PARTIAL = 0.9
+    WEIGHT_EMBEDDING = 0.1
 
     combined_scores = []
     for i, emp in enumerate(employees):
-        partial_score = partial_match_percentage(query_skills, emp["skills"])
+        partial_score, matched_skills = partial_match(query_skills, emp["skills"])
         embedding_score = float(cos_similarities[i])
-        combined_score = WEIGHT_EMBEDDING * embedding_score + WEIGHT_PARTIAL * partial_score
+        combined_score = WEIGHT_PARTIAL * partial_score + WEIGHT_EMBEDDING * embedding_score
+
         combined_scores.append({
             "id": emp["id"],
             "skills": emp["skills"],
-            "combined_score": combined_score * 100
+            "matched_skills": matched_skills,
+            #"partial_score": partial_score * 100,
+            #"embedding_score": embedding_score * 100,
+            "combined_score": combined_score * 100,
+            #"combined_score_formula": f"{WEIGHT_PARTIAL} * {partial_score*100:.2f} + {WEIGHT_EMBEDDING} * {embedding_score*100:.2f} = {combined_score*100:.2f}"
         })
 
     combined_scores.sort(key=lambda x: x["combined_score"], reverse=True)
     return jsonify(combined_scores)
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=True, host="0.0.0.0", port=port)
